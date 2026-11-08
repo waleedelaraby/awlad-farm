@@ -7360,9 +7360,343 @@ body.cloud-ro .view-section input:not(.ro-ok):not([type=checkbox]),body.cloud-ro
   async function cloudSaveNow() { clearTimeout(S.t.save); if (S.dirty) await cloudSave(); }
 
   // اختبار/تشخيص
-  window._cloud = { rpc: rpc, S: S, beat: beat, save: cloudSave, apply: cloudApply, markAdminButtons: markAdminButtons };
+  window._cloud = { rpc: rpc, S: S, beat: beat, save: cloudSave, apply: cloudApply, markAdminButtons: markAdminButtons, ensureTok: ensureTok, hdr: hdr, CFG: CFG };
   setTimeout(markAdminButtons, 300);
 })();
+</script>
+<script>
+/* مولّد تقرير "اليومية" — يعتمد على دوال البرنامج نفسها عشان الأرقام تطابق الشاشة */
+(function () {
+  var FARM = 'أولاد حامد للمزارع السمكية';
+  var N = function (v) { return Number(v) || 0; };
+  var E = function (s) { return escapeHtml(String(s == null ? '' : s)); };
+  function money(v) { v = Math.round(N(v) * 100) / 100; return v === 0 ? '—' : v.toLocaleString('en-US', { maximumFractionDigits: 2 }); }
+  function num(v) { v = N(v); return v === 0 ? '—' : v.toLocaleString('en-US', { maximumFractionDigits: 2 }); }
+
+  function cashChain(day) { // نفس سلسلة updateDayCalc
+    var prev = INITIAL_MONTH_BALANCE, m = null;
+    for (var i = 1; i <= day; i++) { m = computeDayMetrics(i, prev); prev = m.J7; }
+    return m;
+  }
+  function tradeRows(arr) {
+    return (arr || []).filter(function (r) { return !r.stock; }).map(function (r) {
+      var q = N(r.qty), p = N(r.price), adj = N(r.adj), paid = N(r.paid), tot = q * p + adj;
+      return { name: r.name, type: r.type, q: q, p: p, tot: tot, paid: paid, rem: tot - paid, used: q !== 0 || tot !== 0 || paid !== 0 };
+    }).filter(function (r) { return r.used; });
+  }
+
+  window.collectDailyReport = function (day) {
+    var d = daysData[day], m = cashChain(day), R = { day: day, date: getDayDateStr(day), month: currentMonthName, m: m };
+    // علف
+    R.feed = []; var fc = m.feedRowsCalc || [];
+    for (var i = 1; i < d.feed.length - 1; i++) {
+      var r = d.feed[i], q = N(r.qty), p = N(r.price), tot = (fc[i] && fc[i].F != null) ? fc[i].F : q * p, paid = N(r.paid), nol = N(r.noloun);
+      if (!(r.merchant || q || p || paid || nol)) continue;
+      R.feed.push({ merchant: r.merchant, type: r.type, q: q, p: p, tot: tot, paid: paid, nol: nol, rem: tot - paid - nol });
+    }
+    R.stock = getFeedStock(day);
+    // مبيعات سمك
+    R.fish = []; var sc = m.fishRowsCalc || [];
+    d.fishSales.forEach(function (r, i) {
+      var q = N(r.qty), p = N(r.price), tot = (sc[i] && sc[i].tot != null) ? N(sc[i].tot) : q * p, paid = N(r.paid);
+      if (!(r.merchant || q || p || paid)) return;
+      R.fish.push({ buyer: r.merchant, pond: r.pond, type: r.type, q: q, p: p, tot: tot, paid: paid, old: sc[i] ? N(sc[i].old) : 0 });
+    });
+    // زريعة
+    R.fry = []; d.fryPurchases.forEach(function (r) {
+      var q = N(r.qty), p = N(r.price), paid = N(r.paid);
+      if (!(r.pond || q || paid)) return;
+      R.fry.push({ pond: r.pond, type: r.type, q: q, p: p, tot: q * p, paid: paid, merchant: r.merchant });
+    });
+    // أحواض
+    R.groups = []; (m.grpStats || []).forEach(function (g, gi) {
+      var grp = POND_GROUPS[gi]; if (!grp) return;
+      var ponds = [];
+      grp.ponds.forEach(function (p) {
+        var x = d.ponds[p.name] || {}, pc = (m.pondCalc || {})[p.name] || { cost: 0, paid: 0 };
+        var bags = N(x.b1) + N(x.b2), maint = N(x.maint);
+        if (bags || pc.cost || maint || N(pc.paid)) ponds.push({ name: p.name, owner: p.owner, bags: bags, cost: N(pc.cost), maint: maint, paid: N(pc.paid) });
+      });
+      if (ponds.length || g.gCost || g.gMaint) R.groups.push({ title: grp.title, bags: N(g.gB1) + N(g.gB2), cost: N(g.gCost), maint: N(g.gMaint), paid: N(g.gPaid), ponds: ponds });
+    });
+    R.exp = d.expenses.filter(function (r) { return r.purpose || N(r.amount); }).map(function (r) { return { t: r.purpose, a: N(r.amount) }; });
+    R.sal = d.salaries.filter(function (r) { return r.worker || N(r.amount); }).map(function (r) { return { t: r.worker, a: N(r.amount) }; });
+    R.tbuy = tradeRows(d.tradeBuy); R.tsell = tradeRows(d.tradeSell);
+    return R;
+  };
+
+  var CSS = '@page{size:A4 portrait;margin:11mm 11mm 14mm}*{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}' +
+    'body{font-family:Cairo,"Segoe UI",Tahoma,"DejaVu Sans",Arial,sans-serif;direction:rtl;color:#1c2833;font-size:11.5px;margin:0;line-height:1.5}' +
+    '.hd{display:flex;justify-content:space-between;align-items:center;background:#0f4c5c;color:#fff;border-radius:8px;padding:12px 16px;margin-bottom:12px}' +
+    '.hd .farm{font-size:12px;color:#cfe3e8}.hd h1{margin:0;font-size:23px;color:#fff;font-weight:700}' +
+    '.hd .dt{text-align:left;font-size:12px;color:#ffe08a}.hd .dt b{display:block;font-size:17px;color:#fff}' +
+    '.kp{display:flex;gap:7px;margin-bottom:12px}.kp>div{flex:1;border-radius:7px;padding:8px 9px;background:#f2f6f7;border:1px solid #dbe5e8;border-top:3px solid #0f4c5c}' +
+    '.kp small{display:block;color:#5d6d7e;font-size:10px}.kp b{font-size:15px;color:#0f4c5c}.kp>div.g{border-top-color:#2e8b57}.kp>div.r{border-top-color:#c0392b}.kp>div.a{border-top-color:#d4a017}' +
+    'h3{margin:13px 0 5px;font-size:13px;color:#0f4c5c;display:flex;align-items:center;gap:6px}h3:before{content:"";width:5px;height:15px;background:#d4a017;border-radius:2px}' +
+    'h3 small{margin-right:auto;font-weight:400;color:#7b8a8b;font-size:10.5px}' +
+    'table{width:100%;border-collapse:collapse;margin-bottom:4px;page-break-inside:auto}tr{page-break-inside:avoid}' +
+    'th{background:#e6eef0;color:#1e3d59;padding:5px 4px;font-size:10.5px;border-bottom:2px solid #0f4c5c;font-weight:700}' +
+    'td{padding:4px 5px;text-align:center;font-size:11px;border-bottom:1px solid #e1e8ea}td.l,th.l{text-align:right}' +
+    'tr.tot td{background:#fbf3d5;font-weight:700;border-top:1.5px solid #d4a017}' +
+    '.neg{color:#c0392b}.pos{color:#1e8449}.mut{color:#8a979a}' +
+    '.cash{display:flex;align-items:stretch;gap:6px;margin-bottom:4px}.cash>div{flex:1;border:1px solid #dbe5e8;border-radius:7px;padding:7px 9px;text-align:center;background:#fff}' +
+    '.cash small{display:block;color:#5d6d7e;font-size:10px}.cash b{font-size:14px}.cash .op{flex:0 0 18px;border:0;background:none;font-size:18px;color:#8a979a;padding:10px 0}' +
+    '.cash .fin{background:#0f4c5c;border-color:#0f4c5c}.cash .fin small{color:#cfe3e8}.cash .fin b{color:#ffe08a;font-size:16px}' +
+    '.sub{display:flex;gap:14px;font-size:10.5px;color:#5d6d7e;margin:2px 4px 6px}.sub span b{color:#1c2833}' +
+    '.two{display:flex;gap:12px}.two>div{flex:1}' +
+    '.stock{display:flex;gap:6px;margin:6px 0}.stock div{flex:1;background:#f2f6f7;border-radius:6px;padding:5px;text-align:center;border:1px solid #dbe5e8}.stock small{display:block;font-size:10px;color:#5d6d7e}.stock b{font-size:13px}' +
+    '.grp{margin-bottom:7px;page-break-inside:avoid}.gt{display:flex;justify-content:space-between;background:#e6eef0;border-radius:5px;padding:4px 9px;font-weight:700;color:#0f4c5c;font-size:11.5px}.gt span{font-weight:400;color:#34495e;font-size:10.5px}' +
+    '.chips{display:flex;flex-wrap:wrap;gap:4px;padding:5px 2px}.chip{border:1px solid #d3dee1;border-radius:5px;padding:2px 7px;font-size:10.5px;background:#fff}.chip b{color:#0f4c5c}' +
+    '.none{color:#8a979a;text-align:center;padding:30px 0;font-size:14px;border:1.5px dashed #cfd8dc;border-radius:8px;margin:16px 0}' +
+    '.ft{margin-top:16px;padding-top:6px;border-top:1px solid #cfd8dc;display:flex;justify-content:space-between;font-size:9.5px;color:#8a979a}';
+
+  function stamp() { var p = {}; new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Cairo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date()).forEach(function (x) { p[x.type] = x.value; }); return p.year + '-' + p.month + '-' + p.day + ' ' + p.hour + ':' + p.minute; }
+  function tbl(head, rows, foot) {
+    return '<table><thead><tr>' + head.map(function (h, i) { return '<th' + (i === 0 ? ' class="l"' : '') + '>' + h + '</th>'; }).join('') + '</tr></thead><tbody>' +
+      rows.map(function (r) { return '<tr>' + r.map(function (c, i) { return '<td' + (i === 0 ? ' class="l"' : '') + '>' + c + '</td>'; }).join('') + '</tr>'; }).join('') +
+      (foot ? '<tr class="tot">' + foot.map(function (c, i) { return '<td' + (i === 0 ? ' class="l"' : '') + '>' + c + '</td>'; }).join('') + '</tr>' : '') + '</tbody></table>';
+  }
+  function kp(label, val, cls) { return '<div class="' + (cls || '') + '"><small>' + label + '</small><b>' + val + '</b></div>'; }
+
+  window.buildDailyReportHtml = function (day) {
+    var R = collectDailyReport(day), m = R.m, h = '';
+    var feedTot = m.sumF_12_20 || 0, feedBags = m.sumD_12_20 || 0;
+    var pondCost = R.groups.reduce(function (a, g) { return a + g.cost; }, 0);
+    var expTot = R.exp.reduce(function (a, x) { return a + x.a; }, 0), salTot = R.sal.reduce(function (a, x) { return a + x.a; }, 0);
+    var fishTot = R.fish.reduce(function (a, x) { return a + x.tot; }, 0), fishPaid = m.Q28_paid || 0;
+    var hasAny = R.feed.length || R.fish.length || R.fry.length || R.groups.length || R.exp.length || R.sal.length || R.tbuy.length || R.tsell.length || N(m.J6) || N(m.K6);
+
+    h += '<div class="hd"><div><div class="farm">' + FARM + '</div><h1>اليومية</h1></div><div class="dt"><b>يوم ' + R.day + '</b>' + E(R.date) + ' · ' + E(R.month) + '</div></div>';
+    h += '<div class="kp">' + kp('رصيد الخزنة الحالي', money(m.J7), '') + kp('وارد اليوم (نقدية)', money(m.J6), 'g') + kp('منصرف اليوم', money(m.K6), 'r') +
+      kp('علف مشترى (شيكارة)', num(feedBags), 'a') + kp('تأكيل الأحواض', money(pondCost), 'a') + '</div>';
+
+    if (!hasAny) { h += '<div class="none">لا توجد حركة مسجّلة في هذا اليوم حتى الآن</div>'; }
+
+    // الخزنة
+    var outParts = [], acc = 0;
+    function addOut(l, v) { v = N(v); if (v) { outParts.push(l + ' <b>' + money(v) + '</b>'); acc += v; } }
+    addOut('علف نقدي', m.sumG_11_21); addOut('نولون', m.sumK_11_21); addOut('مصروفات', expTot); addOut('رواتب', salTot);
+    addOut('زريعة', N(m.sumQ_11_21) + N(m.H59_paid)); addOut('مشترى تجارة', m.tradeSums && m.tradeSums.buyPaid);
+    if (Math.abs(N(m.K6) - acc) > 0.5) addOut('أخرى', N(m.K6) - acc);
+    var inParts = [];
+    if (N(m.Q28_paid)) inParts.push('مبيعات سمك <b>' + money(m.Q28_paid) + '</b>');
+    if (m.tradeSums && N(m.tradeSums.sellPaid)) inParts.push('مبيع تجارة <b>' + money(m.tradeSums.sellPaid) + '</b>');
+    h += '<h3>حركة الخزنة</h3><div class="cash"><div><small>رصيد أمس</small><b>' + money(m.I6) + '</b></div><div class="op">+</div><div><small>وارد</small><b class="pos">' + money(m.J6) + '</b></div><div class="op">−</div><div><small>منصرف</small><b class="neg">' + money(m.K6) + '</b></div><div class="op">=</div><div class="fin"><small>رصيد اليوم</small><b>' + money(m.J7) + '</b></div></div>';
+    if (inParts.length || outParts.length) h += '<div class="sub"><span>الوارد: ' + (inParts.join(' · ') || '—') + '</span><span>المنصرف: ' + (outParts.join(' · ') || '—') + '</span></div>';
+
+    // علف
+    if (R.feed.length) {
+      h += '<h3>مشتريات العلف <small>' + num(feedBags) + ' شيكارة · ' + money(feedTot) + ' ج</small></h3>';
+      h += tbl(['التاجر', 'النوع', 'شيكارة', 'السعر', 'الإجمالي', 'المدفوع', 'المتبقي'], R.feed.map(function (x) {
+        return [E(x.merchant), E(x.type), num(x.q), x.p ? money(x.p) : '<span class="mut">بدون سعر</span>', money(x.tot), money(x.paid + x.nol), '<span class="' + (x.rem > 0 ? 'neg' : '') + '">' + money(x.rem) + '</span>'];
+      }), ['الإجمالي', '', num(feedBags), '', money(feedTot), money(R.feed.reduce(function (a, x) { return a + x.paid + x.nol; }, 0)), money(R.feed.reduce(function (a, x) { return a + x.rem; }, 0))]);
+    }
+    var st = R.stock;
+    if (st && (N(st.opening) || N(st.inBags) || N(st.out) || N(st.balance))) {
+      h += '<h3>مخزون العلف</h3><div class="stock"><div><small>رصيد أول اليوم</small><b>' + num(st.opening) + '</b></div><div><small>وارد اليوم</small><b>' + num(st.inBags) + '</b></div><div><small>مسحوب للأحواض</small><b>' + num(st.out) + '</b></div><div><small>المتبقي (مبيت)</small><b>' + num(st.balance) + '</b></div></div>';
+    }
+    // سمك
+    if (R.fish.length) {
+      h += '<h3>مبيعات السمك <small>المحصّل اليوم ' + money(fishPaid) + ' ج</small></h3>';
+      h += tbl(['المشتري', 'الحوض', 'النوع', 'الكمية', 'السعر', 'الإجمالي', 'المحصّل', 'رصيد سابق'], R.fish.map(function (x) {
+        return [E(x.buyer), E(x.pond) || '—', E(x.type) || '—', num(x.q), x.p ? money(x.p) : '—', money(x.tot), '<span class="pos">' + money(x.paid) + '</span>', money(x.old)];
+      }));
+    }
+    // تجارة
+    if (R.tsell.length) {
+      h += '<h3>تجارة — مبيع</h3>' + tbl(['العميل', 'النوع', 'الكمية', 'السعر', 'الإجمالي', 'المحصّل', 'المتبقي'], R.tsell.map(function (x) { return [E(x.name), E(x.type) || '—', num(x.q), money(x.p), money(x.tot), money(x.paid), money(x.rem)]; }));
+    }
+    if (R.tbuy.length) {
+      h += '<h3>تجارة — مشترى</h3>' + tbl(['المورّد', 'النوع', 'الكمية', 'السعر', 'الإجمالي', 'المدفوع', 'المتبقي'], R.tbuy.map(function (x) { return [E(x.name), E(x.type) || '—', num(x.q), money(x.p), money(x.tot), money(x.paid), money(x.rem)]; }));
+    }
+    // زريعة
+    if (R.fry.length) {
+      var net = R.fry.reduce(function (a, x) { return a + x.q; }, 0), netV = R.fry.reduce(function (a, x) { return a + x.tot; }, 0);
+      var inQ = R.fry.filter(function (x) { return x.q > 0; }).reduce(function (a, x) { return a + x.q; }, 0), outQ = R.fry.filter(function (x) { return x.q < 0; }).reduce(function (a, x) { return a + x.q; }, 0);
+      h += '<h3>حركة الزريعة <small>داخل ' + num(inQ) + ' · خارج ' + num(-outQ) + ' · الصافي ' + (net === 0 ? '0' : num(net)) + '</small></h3>';
+      h += '<div class="chips">' + R.fry.map(function (x) { return '<span class="chip">' + E(x.pond) + ' <b class="' + (x.q < 0 ? 'neg' : 'pos') + '">' + (x.q < 0 ? '−' + num(-x.q) : '+' + num(x.q)) + '</b></span>'; }).join('') + '</div>';
+      if (netV) h += '<div class="sub"><span>صافي القيمة: <b>' + money(netV) + ' ج</b></span></div>';
+    }
+    // أحواض
+    if (R.groups.length) {
+      var gb = R.groups.reduce(function (a, g) { return a + g.bags; }, 0);
+      h += '<h3>تأكيل الأحواض <small>' + num(gb) + ' بوكشة · ' + money(pondCost) + ' ج</small></h3>';
+      R.groups.forEach(function (g) {
+        h += '<div class="grp"><div class="gt">' + E(g.title) + '<span>' + num(g.bags) + ' بوكشة · ' + money(g.cost) + ' ج' + (g.maint ? ' · صيانة ' + money(g.maint) : '') + (g.paid ? ' · مدفوع ' + money(g.paid) : '') + '</span></div><div class="chips">' +
+          g.ponds.map(function (p) { return '<span class="chip">' + E(p.name) + ' <b>' + num(p.bags) + '</b>' + (p.cost ? ' · ' + money(p.cost) : '') + (p.maint ? ' · صيانة ' + money(p.maint) : '') + '</span>'; }).join('') + '</div></div>';
+      });
+    }
+    // مصروفات
+    if (R.exp.length || R.sal.length) {
+      h += '<div class="two">';
+      if (R.exp.length) h += '<div><h3>المصروفات <small>' + money(expTot) + ' ج</small></h3>' + tbl(['البيان', 'المبلغ'], R.exp.map(function (x) { return [E(x.t), money(x.a)]; })) + '</div>';
+      if (R.sal.length) h += '<div><h3>الرواتب والعمال <small>' + money(salTot) + ' ج</small></h3>' + tbl(['العامل', 'المبلغ'], R.sal.map(function (x) { return [E(x.t), money(x.a)]; })) + '</div>';
+      h += '</div>';
+    }
+    h += '<div class="ft"><span>' + FARM + ' — تقرير آلي</span><span>صدر: ' + new Date().toLocaleString('en-GB', { timeZone: 'Africa/Cairo' }) + ' (القاهرة)</span></div>';
+    return '<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>اليومية ' + R.day + '</title><style>' + CSS + '</style></head><body>' + h + '</body></html>';
+  };
+})();
+
+/* ===== التقارير الآلية: PDF بالمتصفح + رفع + لوحة الأدمن ===== */
+(function () {
+  var REPORTS = { daily: { label: 'اليومية', build: function (day) { return window.buildDailyReportHtml(day); } } };
+  var E = function (s) { return escapeHtml(String(s == null ? '' : s)); };
+  function toast(m, ms) {
+    var t = document.getElementById('rpToast');
+    if (!t) { t = document.createElement('div'); t.id = 'rpToast'; t.className = 'no-print'; t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1c2833;color:#fff;padding:10px 18px;border-radius:8px;z-index:2147483000;font-size:14px;max-width:90vw;box-shadow:0 4px 16px rgba(0,0,0,.4)'; document.body.appendChild(t); }
+    t.textContent = m; t.style.display = 'block'; clearTimeout(t._t); t._t = setTimeout(function () { t.style.display = 'none'; }, ms || 3000);
+  }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  // ---------- HTML -> صفحات A4 (صور JPEG) -> PDF بدون مكتبات ----------
+  var PX = { W: 794, H: 1123, M: 34 };
+  function b64ToBytes(b64) { var bin = atob(b64), u = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; }
+  function bytesToB64(u) { var s = '', ch = 0x8000; for (var i = 0; i < u.length; i += ch) s += String.fromCharCode.apply(null, u.subarray(i, i + ch)); return btoa(s); }
+
+  function makePdf(pages) {
+    var enc = new TextEncoder(), parts = [], offs = [], len = 0;
+    function push(x) { var b = typeof x === 'string' ? enc.encode(x) : x; parts.push(b); len += b.length; }
+    function obj(n) { offs[n] = len; push(n + ' 0 obj\n'); }
+    var n = pages.length, total = 2 + 3 * n;
+    push('%PDF-1.4\n');
+    obj(1); push('<</Type/Catalog/Pages 2 0 R>>\nendobj\n');
+    obj(2); push('<</Type/Pages/Count ' + n + '/Kids[' + pages.map(function (_, i) { return (3 + 3 * i) + ' 0 R'; }).join(' ') + ']>>\nendobj\n');
+    pages.forEach(function (p, i) {
+      var pg = 3 + 3 * i, ct = 4 + 3 * i, im = 5 + 3 * i, cs = 'q 595.28 0 0 841.89 0 0 cm /Im0 Do Q';
+      obj(pg); push('<</Type/Page/Parent 2 0 R/MediaBox[0 0 595.28 841.89]/Resources<</XObject<</Im0 ' + im + ' 0 R>>>>/Contents ' + ct + ' 0 R>>\nendobj\n');
+      obj(ct); push('<</Length ' + cs.length + '>>\nstream\n' + cs + '\nendstream\nendobj\n');
+      obj(im); push('<</Type/XObject/Subtype/Image/Width ' + p.w + '/Height ' + p.h + '/ColorSpace/DeviceRGB/BitsPerComponent 8/Filter/DCTDecode/Length ' + p.bytes.length + '>>\nstream\n'); push(p.bytes); push('\nendstream\nendobj\n');
+    });
+    var xr = len; push('xref\n0 ' + (total + 1) + '\n0000000000 65535 f \n');
+    for (var k = 1; k <= total; k++) push(('0000000000' + offs[k]).slice(-10) + ' 00000 n \n');
+    push('trailer\n<</Size ' + (total + 1) + '/Root 1 0 R>>\nstartxref\n' + xr + '\n%%EOF');
+    var out = new Uint8Array(len), o = 0; parts.forEach(function (b) { out.set(b, o); o += b.length; });
+    return out;
+  }
+
+  async function htmlToPdf(html) {
+    var cw = PX.W - 2 * PX.M, ch = PX.H - 2 * PX.M - 12, SC = 2;
+    var fr = document.createElement('iframe');
+    fr.style.cssText = 'position:fixed;left:-10000px;top:0;width:' + cw + 'px;height:1200px;border:0;visibility:hidden';
+    document.body.appendChild(fr);
+    try {
+      var d = fr.contentDocument; d.open(); d.write(html); d.close();
+      await sleep(250);
+      var body = d.body, css = d.querySelector('style').textContent.replace(/@page\{[^}]*\}/, '').replace(/&/g, '&amp;');
+      var base = body.getBoundingClientRect().top, total = Math.ceil(d.documentElement.scrollHeight);
+      var cands = [];
+      Array.prototype.forEach.call(body.children, function (el) { var p = el.previousElementSibling; if (el !== body.firstElementChild && !(p && p.tagName === 'H3')) cands.push(el.getBoundingClientRect().top - base); });
+      Array.prototype.forEach.call(d.querySelectorAll('tbody tr'), function (tr, i) { if (tr.previousElementSibling) cands.push(tr.getBoundingClientRect().top - base); });
+      Array.prototype.forEach.call(d.querySelectorAll('.grp'), function (el) { cands.push(el.getBoundingClientRect().top - base); });
+      cands.sort(function (a, b) { return a - b; });
+      var starts = [0], cur = 0;
+      while (total - cur > ch) {
+        var cut = null; for (var i = 0; i < cands.length; i++) { if (cands[i] > cur + 40 && cands[i] <= cur + ch) cut = cands[i]; }
+        if (cut == null) cut = cur + ch; starts.push(cut); cur = cut;
+      }
+      var inner = new XMLSerializer().serializeToString(body), imgs = [];
+      for (var pI = 0; pI < starts.length; pI++) {
+        var y0 = starts[pI], hh = Math.max(10, Math.min(ch, (pI + 1 < starts.length ? starts[pI + 1] : total) - y0));
+        var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + cw + '" height="' + hh + '"><foreignObject x="0" y="0" width="' + cw + '" height="' + hh + '">' +
+          '<div xmlns="http://www.w3.org/1999/xhtml" style="width:' + cw + 'px;height:' + hh + 'px;overflow:hidden;position:relative;background:#fff"><style>' + css + '</style>' +
+          '<div style="position:absolute;left:0;top:' + (-y0) + 'px;width:' + cw + 'px">' + inner + '</div></div></foreignObject></svg>';
+        var img = new Image(); img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+        await new Promise(function (res, rej) { img.onload = res; img.onerror = function () { rej(new Error('render_failed')); }; });
+        var cv = document.createElement('canvas'); cv.width = PX.W * SC; cv.height = PX.H * SC;
+        var cx = cv.getContext('2d'); cx.fillStyle = '#fff'; cx.fillRect(0, 0, cv.width, cv.height);
+        cx.drawImage(img, PX.M * SC, PX.M * SC, cw * SC, hh * SC);
+        cx.fillStyle = '#8a979a'; cx.font = (9 * SC) + 'px Arial'; cx.textAlign = 'center';
+        cx.fillText((pI + 1) + ' / ' + starts.length, cv.width / 2, cv.height - 14 * SC);
+        var jb = cv.toDataURL('image/jpeg', 0.9).split(',')[1];
+        imgs.push({ bytes: b64ToBytes(jb), w: cv.width, h: cv.height });
+      }
+      return makePdf(imgs);
+    } finally { fr.remove(); }
+  }
+  window.reportHtmlToPdf = htmlToPdf;
+
+  // ---------- رفع ----------
+  function C() { return window._cloud; }
+  function cairoToday() { var p = {}; new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Cairo', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date()).forEach(function (x) { p[x.type] = x.value; }); return p.year + '-' + p.month + '-' + p.day; }
+  function dayForDate(ds) { for (var d = 1; d <= 31; d++) { if (daysData[d]) { try { if (getDayDateStr(d) === ds) return d; } catch (e) { } } } return 0; }
+  async function pushReport(kind, day) {
+    var R = REPORTS[kind]; if (!R) throw new Error('unknown_kind');
+    var ds = getDayDateStr(day), html = R.build(day), pdf = await htmlToPdf(html);
+    var m = window.collectDailyReport(day).m;
+    var summary = { day: day, cash: m.J7, income: m.J6, outflow: m.K6 };
+    await C().rpc('report_put', { p_session: C().S.session, p_kind: kind, p_date: ds, p_b64: bytesToB64(pdf), p_summary: summary });
+    return { date: ds, kb: Math.round(pdf.length / 1024) };
+  }
+  window.reportPush = pushReport;
+
+  // رفع تلقائي لتقرير اليوم بعد أي حفظ حقيقي (بيتعمل من اللي ماسك التحرير)
+  var lastV, busy = false, failN = 0;
+  setInterval(async function () {
+    try {
+      var c = C(); if (!c) return; var S = c.S;
+      if (!S.loggedIn || !S.loaded || !S.hasLock || S.ro || S.dirty || S.saving || S.offline || busy) return;
+      if (lastV === undefined) { lastV = S.version; return; }
+      if (S.version === lastV) return;
+      var day = dayForDate(cairoToday()); if (!day) { lastV = S.version; return; }
+      busy = true; var v = S.version;
+      await pushReport('daily', day); lastV = v; failN = 0;
+    } catch (e) { failN++; if (failN === 1 || failN % 10 === 0) { try { console.warn('report push failed', e.message); } catch (x) { } } }
+    finally { busy = false; }
+  }, 45000);
+
+  // ---------- لوحة الأدمن ----------
+  var origOpen = window.cloudAdminOpen;
+  window.cloudAdminOpen = async function () {
+    await origOpen.apply(this, arguments);
+    var o = document.getElementById('cloudAdmin'), cp = o && o.querySelector('.cp'); if (!cp || cp.querySelector('#rpSec')) return;
+    var sec = document.createElement('div'); sec.id = 'rpSec'; sec.innerHTML = '<h4>📨 التقارير الآلية (تليجرام)</h4><div style="padding:0 12px 14px;">جاري التحميل…</div>';
+    cp.appendChild(sec); rpRender();
+  };
+  async function rpRender() {
+    var sec = document.getElementById('rpSec'); if (!sec) return;
+    try {
+      var r = await C().rpc('report_get_settings'), st = r.settings, fmt = function (t) { return t ? new Date(t).toLocaleString('en-GB') : '-'; };
+      var kinds = Object.keys(REPORTS).map(function (k) { return '<label style="margin-left:14px;"><input type="checkbox" class="rp-kind" value="' + k + '"' + ((st.kinds || []).indexOf(k) >= 0 ? ' checked' : '') + '> ' + REPORTS[k].label + '</label>'; }).join('');
+      var hours = ''; for (var h = 0; h < 24; h++) hours += '<option value="' + h + '"' + (h === st.send_hour ? ' selected' : '') + '>' + (h < 10 ? '0' : '') + h + ':00</option>';
+      var days = ''; for (var d = 1; d <= 31; d++) { if (daysData[d]) days += '<option value="' + d + '">يوم ' + d + ' (' + getDayDateStr(d) + ')</option>'; }
+      sec.innerHTML = '<h4>📨 التقارير الآلية (تليجرام)</h4><div style="padding:0 12px 14px;line-height:2;">' +
+        '<label><input type="checkbox" id="rpOn"' + (st.enabled ? ' checked' : '') + '> <b>تفعيل الإرسال التلقائي</b></label><br>' +
+        'الوقت (بتوقيت القاهرة): <select id="rpHour">' + hours + '</select> <small>(بيتبعت في أول 15 دقيقة بعد الوقت ده، ومرة واحدة في اليوم)</small><br>' +
+        'التقارير: ' + kinds + '<br>' +
+        'المستلمين (رقم الجروب/الشات، كل رقم في سطر):<br><textarea id="rpChats" rows="3" style="width:100%;max-width:420px;direction:ltr;font-family:monospace;">' + E((st.chat_ids || []).join('\n')) + '</textarea><br>' +
+        '<button type="button" class="admin-btn" onclick="rpSave()">💾 حفظ الإعدادات</button> ' +
+        '<button type="button" class="admin-btn" style="background:#1e8449;" onclick="rpTest()">📤 إرسال تجربة الآن (آخر تقرير مرفوع)</button><br>' +
+        '<hr style="margin:8px 0;border:0;border-top:1px solid #ddd;">رفع تقرير يدويًا: <select id="rpDay">' + days + '</select> <button type="button" class="admin-btn" style="padding:2px 10px;" onclick="rpUpload()">⬆️ إنشاء ورفع</button> <small>(لازم تكون ماسك التحرير)</small>' +
+        '<div style="margin-top:8px;"><b>التقارير المرفوعة:</b> ' + ((r.files || []).length ? '<table class="excel-table"><thead><tr><th>التاريخ</th><th>النوع</th><th>الحجم</th><th>رُفع</th><th>بواسطة</th></tr></thead><tbody>' + r.files.map(function (f) { return '<tr><td>' + E(f.rdate) + '</td><td>' + E((REPORTS[f.kind] || {}).label || f.kind) + '</td><td>' + f.kb + ' KB</td><td style="direction:ltr;">' + fmt(f.made_at) + '</td><td>' + E(f.made_by) + '</td></tr>'; }).join('') + '</tbody></table>' : 'لا يوجد') + '</div>' +
+        '<div style="margin-top:8px;"><b>سجل الإرسال:</b> ' + ((r.log || []).length ? '<table class="excel-table"><thead><tr><th>الوقت</th><th>التاريخ</th><th>النتيجة</th><th>تفاصيل</th></tr></thead><tbody>' + r.log.map(function (l) { return '<tr><td style="direction:ltr;">' + fmt(l.at) + '</td><td>' + E(l.rdate) + '</td><td>' + (l.ok ? '✅' : '❌') + '</td><td style="font-size:11px;direction:ltr;text-align:left;">' + E(l.detail) + '</td></tr>'; }).join('') + '</tbody></table>' : 'لسه مفيش') + '</div></div>';
+    } catch (e) { sec.innerHTML = '<h4>📨 التقارير الآلية (تليجرام)</h4><div style="padding:0 12px 14px;color:#c0392b;">تعذر التحميل: ' + E(e.message) + (/function|does not exist|not found|404/i.test(e.message) ? '<br><small>غالبًا ملف الـSQL بتاع التقارير لسه ما اتشغّلش.</small>' : '') + '</div>'; }
+  }
+  window.rpSave = async function () {
+    var chats = document.getElementById('rpChats').value.split(/[\s,;]+/).map(function (x) { return x.trim(); }).filter(Boolean);
+    var kinds = Array.prototype.map.call(document.querySelectorAll('.rp-kind:checked'), function (x) { return x.value; });
+    try { await C().rpc('report_save_settings', { p_enabled: document.getElementById('rpOn').checked, p_hour: parseInt(document.getElementById('rpHour').value, 10), p_kinds: kinds, p_chats: chats }); toast('✔ اتحفظت إعدادات التقارير.'); rpRender(); }
+    catch (e) { toast(e.message === 'bad_chat' ? 'رقم الجروب لازم يكون أرقام فقط (ممكن بعلامة -).' : 'خطأ: ' + e.message, 5000); }
+  };
+  window.rpUpload = async function () {
+    var d = parseInt(document.getElementById('rpDay').value, 10); if (!d) return;
+    toast('جاري إنشاء التقرير…');
+    try { var r = await pushReport('daily', d); toast('✔ اترفع تقرير ' + r.date + ' (' + r.kb + ' KB).'); rpRender(); }
+    catch (e) { toast(e.message === 'lock_lost' ? 'لازم تكون ماسك التحرير.' : 'خطأ: ' + e.message, 5000); }
+  };
+  window.rpTest = async function () {
+    toast('جاري الإرسال…');
+    try {
+      var c = C(); await c.ensureTok();
+      var r = await fetch(c.CFG.url + '/functions/v1/send-report', { method: 'POST', headers: c.hdr(), body: JSON.stringify({ mode: 'manual', kind: 'daily' }) });
+      var j = await r.json().catch(function () { return {}; });
+      if (r.ok && j.ok) toast('✔ اتبعت (' + j.rdate + ') — شوف تليجرام.', 5000);
+      else toast('❌ ' + (j.error || ('http ' + r.status)) + (j.out ? ' — ' + j.out.map(function (x) { return x.err || ''; }).join(' ') : '') + (r.status === 404 ? ' (الدالة send-report لسه ما اتعملتش)' : ''), 8000);
+      rpRender();
+    } catch (e) { toast('خطأ: ' + e.message, 5000); }
+  };
+})();
+
 </script>
 </body>
 </html>
