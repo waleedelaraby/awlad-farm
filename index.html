@@ -1010,7 +1010,7 @@ function verifyInternalAction(msg) {
           <thead>
             <tr>
               <th>التاريخ</th><th>نوع الأكل</th><th>عدد البوكش</th><th>السعر</th>
-              <th>النولون</th><th>إجمالي الثمن</th><th>الواصل</th><th>المتبقي باليوم</th>
+              <th>إجمالي الثمن</th><th>الواصل</th><th>المتبقي باليوم</th>
             </tr>
           </thead>
           <tbody id="fm_det_tbody"></tbody>
@@ -1709,7 +1709,7 @@ var _saveTimer = null, _saveWarned = false;
 function saveStorage() {
   if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
   try {
-    monthsArchive[currentMonthName] = { daysData: daysData, initBalance: INITIAL_MONTH_BALANCE, opening: captureOpening() };
+    monthsArchive[currentMonthName] = { daysData: daysData, initBalance: INITIAL_MONTH_BALANCE, opening: captureOpening(), derivedBase: (monthsArchive[currentMonthName] || {}).derivedBase };
     const payload = { LIST_DATA, POND_GROUPS, pondsHistorical, currentMonthName, monthsArchive };
     localStorage.setItem('awlad_hamed_clean_v10', JSON.stringify(payload));
     return true;
@@ -2468,6 +2468,14 @@ function computeAllFeedMerchantsData() {
     if (!dayObj) continue;
     const dateStr = getDayDateStr(d);
     const fRows = dayObj.feed.length;
+    // النولون/الإكرامية بتتوزع على بوكش التاجر في نفس اليوم (يتخصم من سعر البوكشة في حسابه)
+    const dayQ = {}, dayN = {};
+    for (let i = 1; i < fRows - 1; i++) {
+      const rr = dayObj.feed[i], mm = (rr.merchant || "").trim();
+      if (!mm || mm === "مبيت أمس" || mm === "مبيت اليوم") continue;
+      dayQ[mm] = (dayQ[mm] || 0) + (Number(rr.qty) || 0);
+      dayN[mm] = (dayN[mm] || 0) + (Number(rr.noloun) || 0);
+    }
     for (let i = 1; i < fRows - 1; i++) {
       const r = dayObj.feed[i];
       const m = (r.merchant || "").trim();
@@ -2476,13 +2484,20 @@ function computeAllFeedMerchantsData() {
         res[m] = { name: m, boxes: 0, netCost: 0, paid: 0, noloun: 0, oldBalance: Number(LIST_DATA.feedMerchantOld[m]) || 0, logs: [] };
       }
       const q = Number(r.qty) || 0, p = Number(r.price) || 0, paid = Number(r.paid) || 0, nol = Number(r.noloun) || 0, dayOld = Number(r.old) || 0;
-      const totCost = (q * p) - nol;
+      const perBox = (dayQ[m] > 0) ? (dayN[m] / dayQ[m]) : 0;
+      let effP = p, totCost;
+      if (dayQ[m] > 0) {
+        effP = q > 0 ? (p - perBox) : p;
+        totCost = q * effP;                      // = الكمية × (السعر − النولون ÷ البوكش)
+      } else {
+        totCost = (q * p) - nol;                 // مفيش بوكش اليوم: النولون يتخصم زي ما هو
+      }
       if (q !== 0 || totCost !== 0 || paid !== 0 || nol !== 0 || dayOld !== 0) {
         res[m].boxes += q;
         res[m].netCost += totCost;
         res[m].paid += paid;
         res[m].noloun += nol;
-        res[m].logs.push({ day: d, date: dateStr, type: r.type || '-', qty: q, price: p, noloun: nol, cost: totCost, paid: paid, rem: totCost - paid });
+        res[m].logs.push({ day: d, date: dateStr, type: r.type || '-', qty: q, price: effP, grossPrice: p, noloun: nol, cost: totCost, paid: paid, rem: totCost - paid });
       }
     }
   }
@@ -2548,13 +2563,13 @@ function renderFeedMerchantsTab() {
 
   let detHtml = '';
   if (mObj.logs.length === 0) {
-    detHtml = `<tr><td colspan="8" style="padding:15px;color:#7f8c8d;">لا توجد حركات مسجلة لهذا التاجر خلال الشهر الحالي</td></tr>`;
+    detHtml = `<tr><td colspan="7" style="padding:15px;color:#7f8c8d;">لا توجد حركات مسجلة لهذا التاجر خلال الشهر الحالي</td></tr>`;
   } else {
     mObj.logs.forEach(l => {
       detHtml += `<tr>
         <td class="label-cell" style="direction:ltr;">${l.date}</td>
-        <td>${l.type}</td><td>${fmtZero(l.qty)}</td><td>${fmtZero(l.price)}</td>
-        <td>${fmtZero(l.noloun)}</td><td class="calc-cell">${fmtZero(l.cost)}</td>
+        <td>${l.type}</td><td>${fmtZero(l.qty)}</td><td title="السعر الأصلي في اليومية: ${l.grossPrice}">${(Math.round(l.price * 100) / 100).toLocaleString('en')}</td>
+        <td class="calc-cell">${fmtZero(l.cost)}</td>
         <td style="color:#27ae60;font-weight:bold;">${fmtZero(l.paid)}</td>
         <td style="color:#c0392b;font-weight:bold;">${fmtZero(l.rem)}</td>
       </tr>`;
@@ -2563,7 +2578,7 @@ function renderFeedMerchantsTab() {
   document.getElementById('fm_det_tbody').innerHTML = detHtml;
   document.getElementById('fm_det_tfoot').innerHTML = `<tr class="total-row">
     <td colspan="2">إجمالي حركة الشهر</td>
-    <td>${fmtZero(mObj.boxes)}</td><td>-</td><td>${fmtZero(mObj.noloun)}</td>
+    <td>${fmtZero(mObj.boxes)}</td><td>-</td>
     <td>${fmtZero(mObj.netCost)}</td><td style="color:#27ae60;">${fmtZero(mObj.paid)}</td>
     <td style="color:#c0392b;">صافي بالقديم: ${fmtZero(mObj.netRemaining)}</td>
   </tr>`;
@@ -7346,16 +7361,25 @@ body.cloud-ro .view-section input:not(.ro-ok):not([type=checkbox]),body.cloud-ro
     try { await rpc('admin_release_lock'); toast('اتفك القفل.'); if (S.hasLock) { S.hasLock = false; await cloudTryEdit(); } cloudAdminOpen(); } catch (e) { toast('خطأ: ' + e.message); }
   };
   window.cloudSetPw = function (kind) {
-    if (!verifyInternalAction('أدخل باسورد الأدمن الحالي لتغيير هذا الباسورد:')) return;
-    askPasswordMasked('اكتب الباسورد الجديد (4 حروف/أرقام على الأقل):', function (p) {
-      rpc('admin_set_password', { p_kind: kind, p_new: String(p) }).then(function () { toast('✔ اتغيّر الباسورد.'); }).catch(function (e) { toast(e.message === 'password_too_short' ? 'الباسورد قصير (4 على الأقل).' : 'خطأ: ' + e.message); });
+    if (!S.isAdmin) { toast('🔒 دي صلاحية الأدمن فقط.'); return; }
+    askPasswordMasked('أدخل باسورد الأدمن الحالي لتغيير هذا الباسورد:', function (cur) {
+      cloudCheckPw('admin', cur, function () {
+        askPasswordMasked('اكتب الباسورد الجديد (4 حروف/أرقام على الأقل):', function (p) {
+          rpc('admin_set_password', { p_kind: kind, p_new: String(p) }).then(function () { toast('✔ اتغيّر الباسورد.'); }).catch(function (e) { toast(e.message === 'password_too_short' ? 'الباسورد قصير (4 على الأقل).' : 'خطأ: ' + e.message); });
+        });
+      });
     });
   };
-  window.cloudRestore = async function (id) {
-    if (!verifyInternalAction('أدخل باسورد الأدمن لاسترجاع النسخة رقم ' + id + ':')) return;
-    if (!S.hasLock) { toast('لازم تكون ماسك التحرير.'); return; }
-    if (!confirm('هيتم استبدال البيانات الحالية بالنسخة دي (والحالية بتتسجل في السجل). متأكد؟')) return;
-    try { await cloudSaveNow(); await rpc('admin_restore_version', { p_session: S.session, p_history_id: id }); await loadServerState(); toast('✔ اتسترجعت النسخة.'); cloudAdminOpen(); } catch (e) { toast('خطأ: ' + e.message); }
+  window.cloudRestore = function (id) {
+    if (id === undefined || id === null || id === 'undefined') { toast('⚠️ رقم النسخة غير معروف، حدّث اللوحة وجرب تاني.'); return; }
+    if (!S.isAdmin) { toast('🔒 دي صلاحية الأدمن فقط.'); return; }
+    askPasswordMasked('أدخل باسورد الأدمن لاسترجاع النسخة رقم ' + id + ':', function (pw) {
+      cloudCheckPw('admin', pw, async function () {
+        if (!S.hasLock) { toast('لازم تكون ماسك التحرير.'); return; }
+        if (!confirm('هيتم استبدال البيانات الحالية بالنسخة دي (والحالية بتتسجل في السجل). متأكد؟')) return;
+        try { await cloudSaveNow(); await rpc('admin_restore_version', { p_session: S.session, p_history_id: id }); await loadServerState(); toast('✔ اتسترجعت النسخة.'); cloudAdminOpen(); } catch (e) { toast('خطأ: ' + e.message); }
+      });
+    });
   };
   async function cloudSaveNow() { clearTimeout(S.t.save); if (S.dirty) await cloudSave(); }
 
@@ -7695,6 +7719,217 @@ body.cloud-ro .view-section input:not(.ro-ok):not([type=checkbox]),body.cloud-ro
       rpRender();
     } catch (e) { toast('خطأ: ' + e.message, 5000); }
   };
+})();
+
+
+// ================= ربط الشهور: أي تعديل في شهر قديم ينتقل تلقائياً للشهور اللي بعده (بعد تأكيدك) =================
+(function () {
+  var clone = function (x) { return JSON.parse(JSON.stringify(x === undefined ? null : x)); };
+  var r2 = function (x) { return Math.round(x * 100) / 100; };
+  var LABELS = { basePaid: 'مدفوع قديم للأحواض', pondsHistorical: 'أرصدة الأحواض القديمة', workerOld: 'متبقي العمال', fishBuyerOld: 'مشترو السمك', feedMerchantOld: 'تجار العلف', fryMerchantOld: 'تجار الزريعة', specialOldBalances: 'الحسابات الخاصة والممولين', feedStockOpening: 'مخزن العلف', elecOld: 'الكهرباء', diggerOld: 'الحفار', allahOld: 'حساب لله', tradeSupplierOld: 'موردو التجارة', tradeBuyerOld: 'مشترو التجارة', initBalance: 'رصيد الخزنة أول الشهر' };
+  var STUBS = ['confirm', 'alert', 'downloadBackupFile', 'closeAdminPanel', 'renderMonthSelector', 'switchDay', 'renderDay', 'saveStorage', 'getSelectedClosePonds'];
+
+  function monthNames() { return Object.keys(monthsArchive); }
+  function enterMonth(n, w) {
+    currentMonthName = n; daysData = monthsArchive[n].daysData;
+    INITIAL_MONTH_BALANCE = w.initBalance; applyOpening(w.opening);
+  }
+
+  // يشغّل ترحيل حقيقي بشكل تجريبي على الشهر n، ويرجّع الأرصدة اللي كانت هتتولّد للشهر اللي بعده
+  function simulate(n) {
+    var saved = {}, inp = document.getElementById('adm_new_month_name'), inpVal = inp ? inp.value : '';
+    var cycBefore = clone(LIST_DATA.closedCycles || []), snaps = clone(LIST_DATA.totalsSnapshots || {});
+    var closeNames = cycBefore.filter(function (c) { return c.closedMonth === n; }).map(function (c) { return c.pond; });
+    STUBS.forEach(function (k) { saved[k] = window[k]; });
+    window.confirm = function () { return true; }; window.alert = function () {};
+    ['downloadBackupFile', 'closeAdminPanel', 'renderMonthSelector', 'switchDay', 'renderDay', 'saveStorage'].forEach(function (k) { window[k] = function () {}; });
+    window.getSelectedClosePonds = function () { return closeNames.slice(); };
+    var out;
+    try {
+      if (inp) inp.value = '__sim__';
+      startNewMonthRollover();
+      var d1 = daysData[1];
+      out = {
+        opening: captureOpening(), initBalance: INITIAL_MONTH_BALANCE,
+        feed1: clone(d1.feed[0]), tradeRows: clone((d1.tradeBuy || []).filter(function (r) { return r.stock; })),
+        cycles: clone((LIST_DATA.closedCycles || []).slice(cycBefore.length)), snap: clone((LIST_DATA.totalsSnapshots || {})[n])
+      };
+    } finally {
+      STUBS.forEach(function (k) { window[k] = saved[k]; });
+      if (inp) inp.value = inpVal;
+      LIST_DATA.closedCycles = cycBefore; LIST_DATA.totalsSnapshots = snaps;
+    }
+    return out;
+  }
+
+  function walk(t, nw, old, path, out) {
+    if (Array.isArray(nw)) {
+      for (var i = 0; i < nw.length; i++) {
+        if (typeof nw[i] !== 'number') continue;
+        var dv = nw[i] - ((Array.isArray(old) && typeof old[i] === 'number') ? old[i] : 0);
+        if (Math.abs(dv) > 0.004) { var was = typeof t[i] === 'number' ? t[i] : 0; t[i] = r2(was + dv); out.push({ path: path.concat(i), was: was, now: t[i] }); }
+      }
+      return;
+    }
+    Object.keys(nw || {}).forEach(function (k) {
+      var v = nw[k], o = old ? old[k] : undefined;
+      if (typeof v === 'number') {
+        var dv2 = v - (typeof o === 'number' ? o : 0);
+        if (Math.abs(dv2) > 0.004) { var was2 = typeof t[k] === 'number' ? t[k] : 0; t[k] = r2(was2 + dv2); out.push({ path: path.concat(k), was: was2, now: t[k] }); }
+      } else if (v && typeof v === 'object' && !(Array.isArray(v) && !v.some(function (x) { return typeof x === 'number'; }))) {
+        if (!t[k] || typeof t[k] !== 'object') t[k] = Array.isArray(v) ? [] : {};
+        walk(t[k], v, o, path.concat(k), out);
+      }
+    });
+  }
+
+  function ensureBaselines(from) {
+    var ms = monthNames(), idx = ms.indexOf(from); if (idx < 0) return;
+    var orig = { n: currentMonthName, d: daysData, b: INITIAL_MONTH_BALANCE, op: captureOpening(), cyc: clone(LIST_DATA.closedCycles || []), sn: clone(LIST_DATA.totalsSnapshots || {}) };
+    try {
+      for (var i = idx; i < ms.length - 1; i++) {
+        var nxt = monthsArchive[ms[i + 1]]; if (nxt.derivedBase) continue;
+        enterMonth(ms[i], { opening: clone(monthsArchive[ms[i]].opening), initBalance: monthsArchive[ms[i]].initBalance });
+        var d = simulate(ms[i]); nxt.derivedBase = { opening: d.opening, initBalance: d.initBalance };
+      }
+    } finally { currentMonthName = orig.n; daysData = orig.d; INITIAL_MONTH_BALANCE = orig.b; applyOpening(orig.op); LIST_DATA.closedCycles = orig.cyc; LIST_DATA.totalsSnapshots = orig.sn; }
+  }
+
+  // خطة التحديث للشهور اللي بعد شهر "from" (من غير ما تغيّر حاجة فعلياً)
+  function plan(from) {
+    saveStorage();
+    var ms = monthNames(), idx = ms.indexOf(from); if (idx < 0 || idx >= ms.length - 1) return null;
+    ensureBaselines(from);
+    var orig = { n: currentMonthName, d: daysData, b: INITIAL_MONTH_BALANCE, op: captureOpening(), cyc: clone(LIST_DATA.closedCycles || []), sn: clone(LIST_DATA.totalsSnapshots || {}) };
+    var W = {}, steps = [], total = 0;
+    try {
+      for (var i = idx; i < ms.length - 1; i++) {
+        var N = ms[i], nx = ms[i + 1], A = monthsArchive[N], B = monthsArchive[nx];
+        var w = W[N] || { opening: clone(A.opening), initBalance: A.initBalance };
+        enterMonth(N, w);
+        var d = simulate(N), base = B.derivedBase || { opening: d.opening, initBalance: d.initBalance };
+        var tgt = { opening: clone(B.opening), initBalance: Number(B.initBalance) || 0 }, ch = [];
+        walk(tgt.opening, d.opening, base.opening, [], ch);
+        var dvb = d.initBalance - (Number(base.initBalance) || 0);
+        if (Math.abs(dvb) > 0.004) { ch.push({ path: ['initBalance'], was: tgt.initBalance, now: r2(tgt.initBalance + dvb) }); tgt.initBalance = r2(tgt.initBalance + dvb); }
+        var stockChanged = JSON.stringify(((B.daysData[1] || {}).feed || [])[0] && (B.daysData[1].feed[0].merchant === 'مبيت أمس') ? B.daysData[1].feed[0] : null) !== JSON.stringify(d.feed1);
+        var cyc = [];
+        d.cycles.forEach(function (e) {
+          var c = (orig.cyc || []).filter(function (x) { return x.pond === e.pond && x.closedMonth === N; })[0];
+          if (c && Math.abs((Number(c.net) || 0) - (Number(e.net) || 0)) > 0.004) cyc.push({ pond: e.pond, was: c.net, now: e.net });
+          if (c) e._existing = true;
+        });
+        W[nx] = tgt;
+        steps.push({ from: N, to: nx, d: d, tgt: tgt, changes: ch, cycles: cyc, stockChanged: stockChanged && true });
+        total += ch.length + cyc.length;
+      }
+    } finally { currentMonthName = orig.n; daysData = orig.d; INITIAL_MONTH_BALANCE = orig.b; applyOpening(orig.op); LIST_DATA.closedCycles = orig.cyc; LIST_DATA.totalsSnapshots = orig.sn; }
+    return { from: from, steps: steps, total: total };
+  }
+
+  function fmt(x) { return Math.round(x).toLocaleString('en'); }
+  function describe(p) {
+    var lines = [];
+    p.steps.forEach(function (s) {
+      if (!s.changes.length && !s.cycles.length) return;
+      lines.push('📅 ' + s.to + ':');
+      s.changes.slice().sort(function (a, b) { return Math.abs(b.now - b.was) - Math.abs(a.now - a.was); }).slice(0, 12).forEach(function (c) {
+        var root = c.path[0], rest = c.path.slice(1).join(' › ');
+        lines.push('  • ' + (LABELS[root] || root) + (rest ? ' — ' + rest : '') + ': ' + fmt(c.was) + ' ← ' + fmt(c.now));
+      });
+      if (s.changes.length > 12) lines.push('  … و ' + (s.changes.length - 12) + ' تغيير آخر');
+      s.cycles.forEach(function (c) { lines.push('  • دورة الحوض المقفول ' + c.pond + ': الصافي ' + fmt(c.was) + ' ← ' + fmt(c.now)); });
+    });
+    return lines.join('\n');
+  }
+
+  function applyPlan(p) {
+    p.steps.forEach(function (s) {
+      var B = monthsArchive[s.to], d = s.d;
+      B.opening = s.tgt.opening; B.initBalance = s.tgt.initBalance; B.derivedBase = { opening: clone(d.opening), initBalance: d.initBalance };
+      var day1 = B.daysData[1];
+      if (day1) {
+        if (day1.feed && day1.feed[0] && day1.feed[0].merchant === 'مبيت أمس' && d.feed1) day1.feed[0] = clone(d.feed1);
+        if (Array.isArray(day1.tradeBuy)) day1.tradeBuy = clone(d.tradeRows).concat(day1.tradeBuy.filter(function (r) { return !r.stock; }));
+      }
+      (d.cycles || []).forEach(function (e) {
+        (LIST_DATA.closedCycles || []).forEach(function (c) {
+          if (c.pond === e.pond && c.closedMonth === s.from) Object.keys(e).forEach(function (k) { if (['closedAt', 'startAfter', 'closedMonth', 'pond', 'owner', '_existing'].indexOf(k) < 0) c[k] = e[k]; });
+        });
+      });
+      if (d.snap) { if (!LIST_DATA.totalsSnapshots) LIST_DATA.totalsSnapshots = {}; LIST_DATA.totalsSnapshots[s.from] = d.snap; }
+    });
+    // لو الشهر الحالي نفسه اتحدّث (حالة المزامنة من شهر أقدم)
+    var cur = monthsArchive[currentMonthName];
+    if (cur && p.steps.some(function (s) { return s.to === currentMonthName; })) { INITIAL_MONTH_BALANCE = cur.initBalance; applyOpening(cur.opening); }
+    delete LIST_DATA.pendingSync;
+    saveStorage();
+  }
+
+  window.linkSync = function (from, silent) {
+    var p = plan(from || currentMonthName);
+    if (!p || !p.total) { if (!silent) alert('✔ الشهور اللاحقة متطابقة مع آخر تعديلاتك، مفيش حاجة تتحدّث.'); delete LIST_DATA.pendingSync; return 'none'; }
+    var msg = 'عدّلت في شهر (' + p.from + ') وده هيغيّر الأرصدة المرحّلة للشهور اللي بعده:\n\n' + describe(p) + '\n\nأي تسوية يدوية عملتها في الشهور دي هتفضل، والفرق بس هو اللي هيتضاف.\nهياخد نسخة احتياطية تلقائي قبل التطبيق.\nتطبّق التحديث؟';
+    if (!confirm(msg)) { LIST_DATA.pendingSync = p.from; saveStorage(); showBanner(); return 'declined'; }
+    try { downloadBackupFile('نسخة_قبل_ربط_الشهور'); } catch (e) {}
+    applyPlan(p); showBanner();
+    return 'applied';
+  };
+  window._linkPlan = plan; window._linkApply = applyPlan; window._linkDescribe = describe;
+
+  function showBanner() {
+    var el = document.getElementById('linkBanner');
+    if (!LIST_DATA.pendingSync) { if (el) el.style.display = 'none'; return; }
+    if (!el) {
+      el = document.createElement('div'); el.id = 'linkBanner';
+      el.style.cssText = 'position:fixed;top:0;left:50%;transform:translateX(-50%);z-index:99998;background:#b9770e;color:#fff;padding:8px 16px;border-radius:0 0 10px 10px;font:700 13px Tahoma,Arial;cursor:pointer;box-shadow:0 2px 8px #0005;direction:rtl;';
+      el.onclick = function () { window.linkSync(LIST_DATA.pendingSync); };
+      document.body.appendChild(el);
+    }
+    el.textContent = '⚠️ تعديلات في شهر (' + LIST_DATA.pendingSync + ') لسه ما اتنقلتش للشهور اللي بعده — اضغط هنا لتحديثها';
+    el.style.display = 'block';
+  }
+
+  // عند الخروج من شهر قديم: فحص وتأكيد
+  var _switchMonth = switchMonth;
+  switchMonth = function (m) {
+    var leaving = currentMonthName;
+    if (m !== leaving && monthsArchive[m]) {
+      try {
+        var ms = monthNames();
+        if (ms.indexOf(leaving) < ms.length - 1) {
+          var r = window.linkSync(leaving, true);
+          if (r === 'declined') { /* هيفضل التنبيه ظاهر */ }
+        }
+        ensureBaselines(m);
+      } catch (e) { console.error('link sync', e); }
+    }
+    _switchMonth(m);
+    try { showBanner(); } catch (e) {}
+  };
+
+  // بعد أي ترحيل جديد: الشهر الجديد يحتفظ بأرصدة "الأصل" عشان الفروق تتحسب صح
+  var _roll = startNewMonthRollover;
+  startNewMonthRollover = function () {
+    var before = currentMonthName;
+    _roll();
+    if (currentMonthName !== before && monthsArchive[currentMonthName]) {
+      var B = monthsArchive[currentMonthName];
+      B.derivedBase = { opening: clone(B.opening), initBalance: B.initBalance };
+      saveStorage();
+    }
+  };
+
+  // زر في لوحة الأدمن
+  function addBtn() {
+    var b = document.querySelector('button[onclick="startNewMonthRollover()"]');
+    if (!b || document.getElementById('linkSyncBtn')) return;
+    var n = document.createElement('button'); n.id = 'linkSyncBtn'; n.className = 'admin-btn'; n.style.background = '#1f618d'; n.style.marginInlineStart = '6px';
+    n.textContent = '🔗 تحديث الشهور اللاحقة'; n.onclick = function () { window.linkSync(currentMonthName); };
+    b.parentNode.insertBefore(n, b.nextSibling);
+  }
+  document.addEventListener('DOMContentLoaded', function () { addBtn(); setTimeout(function () { try { showBanner(); } catch (e) {} }, 1500); });
+  setTimeout(addBtn, 800);
 })();
 
 </script>
