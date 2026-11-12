@@ -7099,6 +7099,7 @@ body.cloud-ro .view-section input:not(.ro-ok):not([type=checkbox]),body.cloud-ro
     buildBar(); setRO(!S.hasLock); startTimers();
     lg.style.display = 'none';
     $('cl_pass').value = '';
+    try { if (window.cloudBismillah) window.cloudBismillah(); } catch (e) { }
   }
 
   // ---------------- ضغط البيانات قبل الإرسال (gzip + base64) ----------------
@@ -7930,6 +7931,46 @@ body.cloud-ro .view-section input:not(.ro-ok):not([type=checkbox]),body.cloud-ro
   }
   document.addEventListener('DOMContentLoaded', function () { addBtn(); setTimeout(function () { try { showBanner(); } catch (e) {} }, 1500); });
   setTimeout(addBtn, 800);
+})();
+
+
+// ================= بسم الله بعد الدخول: مرة في اليوم لكل مستخدم + زر كتم =================
+(function () {
+  var FILE = 'bismillah.mp3', audio = null, pending = false;
+  function ls(k, v) { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { return null; } }
+  function today() { var d = new Date(); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); }
+  function who() { try { return (window._cloudS && window._cloudS.profile && window._cloudS.profile.username) || 'local'; } catch (e) { return 'local'; } }
+  function btn() {
+    var b = document.getElementById('bismBtn');
+    if (!b) {
+      b = document.createElement('button'); b.id = 'bismBtn'; b.type = 'button'; b.className = 'no-print';
+      b.style.cssText = 'position:fixed;bottom:10px;left:10px;z-index:99990;width:32px;height:32px;border-radius:50%;border:1px solid #0f4c5c;background:#fff;cursor:pointer;font-size:15px;line-height:1;padding:0;opacity:.75;';
+      b.onclick = function () { var off = ls('bism_off') === '1'; ls('bism_off', off ? '0' : '1'); upd(); };
+      document.body.appendChild(b);
+    }
+    return b;
+  }
+  function upd() { var b = btn(), off = ls('bism_off') === '1'; b.textContent = off ? '🔇' : '🔊'; b.title = off ? 'تشغيل صوت البداية' : 'كتم صوت البداية'; }
+  function play() {
+    if (ls('bism_off') === '1') return;
+    var key = 'bism_day_' + who();
+    if (ls(key) === today()) return;
+    try {
+      if (!audio) audio = new Audio(FILE);
+      audio.currentTime = 0;
+      var pr = audio.play();
+      if (pr && pr.then) pr.then(function () { ls(key, today()); }).catch(function () { arm(); });
+      else ls(key, today());
+    } catch (e) { }
+  }
+  function arm() {
+    if (pending) return; pending = true;
+    var h = function () { document.removeEventListener('click', h, true); pending = false; play(); };
+    document.addEventListener('click', h, true);
+  }
+  window.cloudBismillah = play;
+  document.addEventListener('DOMContentLoaded', upd);
+  setTimeout(upd, 600);
 })();
 
 </script>
