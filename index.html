@@ -3409,6 +3409,50 @@ function computeMonthly() {
   return { days: days, cash: cash, byType: byType, byBuyer: byBuyer, sWt: sWt, sVal: sVal, sPaid: sPaid, feedBy: feedBy, feedVal: feedVal, feedBags: feedBags, fryByType: fryByType, fryByMerch: fryByMerch, fryCost: fryCost, fryQty: fryQty, expItems: expItems, expTotal: expTotal, ponds: ponds, working: working, specialItems: specialItems, specialTotal: specialTotal, share: working.length ? specialTotal / working.length : 0, wDue: wDue, wDrawn: wDrawn, wRem: wRem, prevName: prevName, cur: cur, prev: prev, stock: stock, alerts: alerts };
 }
 
+// ===== جرد الهوالك (بند "هوالك" في المصروفات) =====
+function isHawalek(purpose) { return /هوالك|هالك/.test(String(purpose || '')); }
+function computeHawalek() {
+  const rows = [], perDay = [];
+  for (let d = 1; d <= 31; d++) {
+    let t = 0;
+    (daysData[d] ? daysData[d].expenses : []).forEach(e => { const a = Number(e.amount) || 0; if (a && isHawalek(e.purpose)) { rows.push({ d: d, date: getDayDateStr(d), amount: a }); t += a; } });
+    perDay.push(t);
+  }
+  const total = rows.reduce((a, r) => a + r.amount, 0);
+  const daysCnt = perDay.filter(v => v > 0).length;
+  let maxD = 0; perDay.forEach((v, i) => { if (v > perDay[maxD]) maxD = i; });
+  // الاتجاه عبر الشهور
+  const months = Object.keys(monthsArchive).map(name => {
+    const dd = (name === currentMonthName ? daysData : monthsArchive[name].daysData) || {};
+    let t = 0, c = 0, sales = 0, exp = 0;
+    Object.keys(dd).forEach(k => {
+      (dd[k].expenses || []).forEach(e => { const a = Number(e.amount) || 0; if (!a) return; exp += a; if (isHawalek(e.purpose)) { t += a; c++; } });
+    });
+    return { name: name, total: t, count: c, exp: exp };
+  });
+  return { rows: rows, perDay: perDay, total: total, count: rows.length, daysCnt: daysCnt, maxDay: perDay[maxD] > 0 ? { d: maxD + 1, v: perDay[maxD] } : null, months: months };
+}
+function hawalekSection(expTotal) {
+  const H = computeHawalek();
+  const pct = (a, b) => b ? (a / b * 100).toFixed(1) + '%' : '-';
+  let inner = kpiRow([kpiBox('إجمالي الهوالك', n0(H.total), '#922b21'), kpiBox('عدد المرات', String(H.count)), kpiBox('أيام فيها هوالك', String(H.daysCnt)),
+    kpiBox('متوسط المرة', n0(H.count ? H.total / H.count : 0)), kpiBox('أعلى يوم', H.maxDay ? 'يوم ' + H.maxDay.d + ' (' + n0(H.maxDay.v) + ')' : '-'), kpiBox('نسبة من إجمالي المصروفات', pct(H.total, expTotal), '#7d6608')], 6);
+  if (!H.count) { inner += '<div style="color:#117a65;padding:8px;">✔ مفيش هوالك مسجلة في هذا الشهر.</div>'; }
+  else {
+    inner += '<div class="sec2-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:14px;"><div><b>تفاصيل الهوالك (اليوم والقيمة)</b>' +
+      miniTable(['اليوم', 'التاريخ', 'القيمة'], H.rows.map(r => ['يوم ' + r.d, escapeHtml(r.date || ''), n0(r.amount)]), ['الإجمالي', '', n0(H.total)]) + '</div>' +
+      '<div><b>الهوالك يومياً</b>' + svgLine(H.perDay.map((_, i) => String(i + 1)), [{ name: 'الهوالك', color: '#922b21', values: H.perDay }]) + '</div></div>';
+  }
+  const ms = H.months;
+  if (ms.length > 1) {
+    inner += '<div style="margin-top:12px;"><b>📈 اتجاه الهوالك عبر الشهور</b>' +
+      miniTable(['الشهر', 'إجمالي الهوالك', 'عدد المرات', 'نسبة من مصروفات الشهر', 'التغيّر عن الشهر السابق'],
+        ms.map((m, i) => { const pv = i ? ms[i - 1].total : null; const ch = pv === null ? '-' : (pv ? ((m.total - pv) / pv * 100 >= 0 ? '▲ ' : '▼ ') + Math.abs((m.total - pv) / pv * 100).toFixed(0) + '%' : (m.total ? '▲ جديد' : '-')); return [escapeHtml(m.name), n0(m.total), String(m.count), pct(m.total, m.exp), ch]; })) +
+      svgLine(ms.map(m => m.name), [{ name: 'إجمالي الهوالك', color: '#922b21', values: ms.map(m => m.total) }]) + '</div>';
+  } else inner += '<div style="font-size:12px;color:#566573;margin-top:8px;">📈 الاتجاه عبر الشهور هيظهر بعد أول شهر جديد.</div>';
+  return secBox('🗑️ جرد الهوالك', '#78281f', inner);
+}
+
 function renderMonthlyTab() {
   const el = document.getElementById('mo_body'); if (!el) return;
   const m = computeMonthly();
@@ -3433,6 +3477,7 @@ function renderMonthlyTab() {
     <div style="margin-top:8px;"><b>عداد مخزن العلف:</b> أول الشهر ${n0(m.stock.opening)} + وارد ${n0(m.stock.inBags)} − مسحوب ${n0(m.stock.out)} = <b>${n0(m.stock.balance)}</b> شيكارة</div>`);
   const expList = sortObj(m.expItems);
   h += secBox('💸 المصروفات حسب البند', '#922b21', `<div class="sec2-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:14px;"><div>${svgDonut(expList.slice(0, 9))}</div><div><b>أكبر 5 بنود</b>${htmlBars(expList.slice(0, 5), '#c0392b')}<div style="margin-top:6px;">إجمالي المصروفات: <b>${n0(m.expTotal)}</b></div></div></div>`);
+  h += hawalekSection(Object.keys(m.expItems).reduce((a, k) => a + m.expItems[k], 0));
   h += secBox('🏗️ مصروفات خاصة للتحميل على الأحواض', '#7d6608',
     kpiRow([kpiBox('إجمالي المصروفات الخاصة', n0(m.specialTotal), '#7d6608'), kpiBox('عدد الأحواض العاملة', String(m.working.length), '#117a65'), kpiBox('⚖️ نسبة كل حوض (المصروفات ÷ العاملة)', n0(m.share), '#0b5345', '#d4efdf')]) +
     miniTable(['البند', 'المبلغ'], m.specialItems.map(x => [escapeHtml(x.label), n0(x.value)]), ['الإجمالي', n0(m.specialTotal)]) +
@@ -7003,7 +7048,7 @@ body.cloud-ro .view-section input:not(.ro-ok):not([type=checkbox]),body.cloud-ro
 (function () {
   var $ = function (id) { return document.getElementById(id); };
   var CFG = { url: 'https://ugnhppubmloghfeudoko.supabase.co', key: 'sb_publishable_IavZi2agYKuhzBbSYZakiQ_vluDGKmD', domain: '@awladhamed.app',
-              beat: window.CLOUD_BEAT || 30000, saveDelay: window.CLOUD_SAVE_DELAY || 4000, idleMs: window.CLOUD_IDLE || 30 * 60000, idleCheck: window.CLOUD_IDLE_CHECK || 30000 };
+              beat: window.CLOUD_BEAT || 30000, saveDelay: window.CLOUD_SAVE_DELAY || 4000, manual: !window.CLOUD_AUTO, idleMs: window.CLOUD_IDLE || 30 * 60000, idleCheck: window.CLOUD_IDLE_CHECK || 30000 };
   var ADMIN_FNS = ["changeAllahPond", "clearAll31Days", "clearCurrentDay", "clearPondGroup", "clearSection", "deleteDiggerLog", "deleteMonthAdmin", "editAllahOld", "editDiggerOld", "editElecOld", "editFeedMerchantOldBalance", "editFishBuyerMeta", "editFryMerchantOldBalance", "editSpecialPersonOldBalance", "exportData", "exportExcel", "openAdminPanel", "quickEditWorkerFromTab", "resetToDefaultDay1", "tradeEditOld", "triggerImportFile"];
   var S = { token: null, refresh: null, exp: 0, uid: null, profile: null, isAdmin: false, session: null, loggedIn: false,
             hasLock: false, holderName: '', version: 0, loaded: false, empty: false, applying: false, saving: false, dirty: false,
@@ -7117,6 +7162,23 @@ body.cloud-ro .view-section input:not(.ro-ok):not([type=checkbox]),body.cloud-ro
     var bin = atob(d.z), buf = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
     return JSON.parse(await new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip'))).text());
   }
+  // بصمة "البيانات الفعلية" بدون حالة العرض: القيم الافتتاحية الخاصة بالشهر الظاهر موجودة أصلًا جوه monthsArchive
+  // (saveStorage بتحدّثها)، فبنستبعد نسخها المؤقتة من LIST_DATA/POND_GROUPS عشان تغيير الشهر لوحده ما يتحسبش تعديل.
+  function cmpJson() {
+    var skip = {}; try { Object.keys(captureOpening()).forEach(function (k) { skip[k] = 1; }); } catch (e) { }
+    var metas = [], ponds = [];
+    Object.keys(LIST_DATA.workerMeta || {}).forEach(function (k) { metas.push(LIST_DATA.workerMeta[k]); });
+    Object.keys(LIST_DATA.fishBuyerMeta || {}).forEach(function (k) { metas.push(LIST_DATA.fishBuyerMeta[k]); });
+    POND_GROUPS.forEach(function (g) { g.ponds.forEach(function (x) { ponds.push(x); }); });
+    return JSON.stringify({ M: monthsArchive, L: LIST_DATA, G: POND_GROUPS }, function (k, v) {
+      if (k === 'derivedBase' || k === 'pendingSync') return undefined;
+      if (this === LIST_DATA && skip[k]) return undefined;
+      if (this === LIST_DATA.trade && (k === 'supplierOld' || k === 'buyerOld')) return undefined;
+      if ((k === 'oldRem' || k === 'old') && metas.indexOf(this) >= 0) return undefined;
+      if (k === 'basePaid' && ponds.indexOf(this) >= 0) return undefined;
+      return v;
+    });
+  }
   function buildPayload() { return { LIST_DATA: LIST_DATA, POND_GROUPS: POND_GROUPS, pondsHistorical: pondsHistorical, currentMonthName: currentMonthName, monthsArchive: monthsArchive }; }
   function cloudApply(p) {
     S.applying = true;
@@ -7141,7 +7203,7 @@ body.cloud-ro .view-section input:not(.ro-ok):not([type=checkbox]),body.cloud-ro
     var data = await zUnpack(r.data);
     if (data && data.LIST_DATA && data.monthsArchive) {
       cloudApply(data); S.applying = true; try { _ss.call(window); } catch (e) { console.error(e); } S.applying = false;
-      S.loaded = true; S.empty = false; S.lastJson = JSON.stringify(buildPayload()); S.dirty = false;
+      S.loaded = true; S.empty = false; S.lastJson = JSON.stringify(buildPayload()); S.lastCmp = cmpJson(); S.dirty = false;
     } else { S.loaded = false; S.empty = true; }
     updateBar();
   }
@@ -7155,6 +7217,9 @@ body.cloud-ro .view-section input:not(.ro-ok):not([type=checkbox]),body.cloud-ro
       var b = document.createElement('button'); b.type = 'button'; b.id = 'cloudAdmBtn'; b.className = 'cloud-ok'; b.textContent = '☁️ السحابة'; b.onclick = function () { cloudAdminOpen(); };
       tb.insertBefore(b, chip.nextSibling);
     }
+    var sb = document.createElement('button'); sb.type = 'button'; sb.id = 'cloudSaveBtn'; sb.textContent = '✔ محفوظ'; sb.style.display = 'none'; sb.onclick = function () { window.cloudSaveClick(); };
+    var ub = document.createElement('button'); ub.type = 'button'; ub.id = 'cloudUndoBtn'; ub.textContent = '↩️ تراجع عن التعديلات'; ub.style.display = 'none'; ub.onclick = function () { window.cloudUndoClick(); };
+    tb.insertBefore(ub, chip.nextSibling); tb.insertBefore(sb, chip.nextSibling);
     var bar = document.createElement('div'); bar.id = 'cloudRoBar'; bar.className = 'no-print';
     var tabs = document.querySelector('.main-tabs-bar'); tabs.parentNode.insertBefore(bar, tabs.nextSibling);
     updateBar();
@@ -7164,6 +7229,8 @@ body.cloud-ro .view-section input:not(.ro-ok):not([type=checkbox]),body.cloud-ro
     var chip = $('cloudChip'); if (!chip || !S.profile) return;
     chip.style.background = S.ro ? '#d68910' : '#1e8449';
     chip.textContent = '☁️ ' + S.profile.display_name + (S.isAdmin ? ' (أدمن)' : '') + ' · ' + (S.ro ? '👁️ قراءة فقط' : (state === 'saving' ? '💾 جاري الحفظ…' : (S.lastSavedAt ? '✔ حُفظ ' + S.lastSavedAt : '✏️ تحرير')));
+    if (CFG.manual && !S.ro && S.dirty && S.hasLock && state !== 'saving') { chip.style.background = '#c0392b'; chip.textContent = '☁️ ' + S.profile.display_name + ' · ⚠️ فيه تعديلات لسه ما اتحفظتش'; }
+    updateSaveBtn();
     var bar = $('cloudRoBar'); if (!bar) return;
     if (S.empty) {
       bar.style.display = 'flex'; bar.innerHTML = S.isAdmin && S.hasLock ? '<span>📭 السحابة فاضية. ارفع ملف البيانات (JSON) بزرار «استرجاع ملف» فوق لبدء النقل.</span>' : '<span>📭 مفيش بيانات على السحابة لسه. الأدمن لازم يرفعها الأول.</span>';
@@ -7191,8 +7258,51 @@ body.cloud-ro .view-section input:not(.ro-ok):not([type=checkbox]),body.cloud-ro
   function markDirty() {
     if (S.applying || !S.loggedIn || !S.hasLock || S.ro) return;
     if (!S.loaded && !S.importPending) return;
-    S.dirty = true; clearTimeout(S.t.save); S.t.save = setTimeout(cloudSave, S.importPending ? 300 : CFG.saveDelay);
+    S.dirty = true; clearTimeout(S.t.save);
+    if (CFG.manual && !S.importPending) {   // حفظ يدوي: مفيش حفظ تلقائي، بس نحدّد هل في تغيير فعلاً
+      clearTimeout(S.t.chk);
+      try { S.dirty = cmpJson() !== S.lastCmp; } catch (e) { }
+      updateBar(); return;
+    }
+    S.t.save = setTimeout(cloudSave, S.importPending ? 300 : CFG.saveDelay);
   }
+  // حفظ فوري لعمليات كبيرة بتتعمل بقرار واحد (ترحيل شهر، حذف شهر…)
+  async function saveNow() { if (!S.loggedIn || !S.hasLock || S.ro) return; clearTimeout(S.t.save); clearTimeout(S.t.chk); S.dirty = true; await cloudSave(); }
+  window.cloudSaveClick = async function () {
+    if (S.ro || !S.hasLock) { toast('أنت في وضع القراءة فقط.'); return; }
+    clearTimeout(S.t.chk); var was = S.version; S.dirty = true; await cloudSave();
+    if (!S.dirty) toast(S.version !== was ? '✔ اتحفظت التعديلات.' : 'مفيش تغييرات جديدة للحفظ.');
+  };
+  window.cloudUndoClick = async function () {
+    if (!S.dirty) return;
+    if (!confirm('هتلغي كل التعديلات اللي ما اتحفظتش وترجع لآخر نسخة محفوظة على السحابة. متأكد؟')) return;
+    try { await loadServerState(); toast('↩️ رجعت لآخر نسخة محفوظة.'); } catch (e) { toast('تعذر الرجوع: ' + e.message); }
+  };
+  // نافذة التعديلات غير المحفوظة: حفظ / انتظر / لأ
+  //   حفظ  = يحفظ ويكمّل | انتظر = يكمّل والتعديلات تفضل معلّقة (لا محفوظة ولا ملغية) | لأ = يلغي التعديلات ويرجع لآخر نسخة محفوظة
+  function askUnsaved(onSaved, onWait) {
+    var ov = document.createElement('div'); ov.className = 'no-print'; ov.style.cssText = 'position:fixed;inset:0;background:#0009;z-index:100000;display:flex;align-items:center;justify-content:center;direction:rtl;font-family:Tahoma,Arial';
+    var btn = function (id, bg, t, sub) { return '<button id="' + id + '" style="display:block;width:100%;background:' + bg + ';color:#fff;border:0;border-radius:8px;padding:10px 14px;margin:6px 0;font-weight:bold;cursor:pointer;font-size:15px">' + t + (sub ? '<div style="font-size:11px;font-weight:normal;opacity:.9;margin-top:2px">' + sub + '</div>' : '') + '</button>'; };
+    ov.innerHTML = '<div style="background:#fff;border-radius:12px;padding:20px 22px;max-width:420px;width:90%;text-align:center"><div style="font-size:17px;font-weight:bold;margin-bottom:12px">⚠️ فيه تعديلات لسه ما اتحفظتش</div>' +
+      btn('uns_s', '#1e8449', '💾 حفظ', 'يحفظ التعديلات على السحابة ويكمّل') +
+      btn('uns_w', '#d68910', '⏳ انتظر', onWait ? 'كمّل والتعديلات تفضل معلّقة (لا محفوظة ولا ملغية) لحد ما تدوس حفظ' : 'ابقى في البرنامج والتعديلات معلّقة لحد ما تدوس حفظ') +
+      btn('uns_d', '#c0392b', '❌ لأ', 'ألغي التعديلات وارجع لآخر نسخة محفوظة') + '</div>';
+    document.body.appendChild(ov);
+    ov.addEventListener('click', function (e) { if (e.target === ov) ov.remove(); });
+    ov.querySelector('#uns_w').onclick = function () { ov.remove(); if (onWait) onWait(); };
+    ov.querySelector('#uns_s').onclick = async function () { await window.cloudSaveClick(); if (!S.dirty) { ov.remove(); onSaved(); } else toast('لسه ما اتحفظش، جرّب تاني.'); };
+    ov.querySelector('#uns_d').onclick = async function () { if (!confirm('هتتلغي كل التعديلات اللي ما اتحفظتش. متأكد؟')) return; try { await loadServerState(); ov.remove(); onSaved(); } catch (e) { toast('تعذر التحميل: ' + e.message); } };
+  }
+  function updateSaveBtn() {
+    var b = $('cloudSaveBtn'), u = $('cloudUndoBtn'); if (!b || !u) return;
+    var on = CFG.manual && S.loggedIn && !S.ro && S.loaded;
+    b.style.display = on ? '' : 'none'; u.style.display = on && S.dirty ? '' : 'none';
+    if (!on) return;
+    if (S.saving) { b.textContent = '💾 جاري الحفظ…'; b.disabled = true; return; }
+    b.disabled = false; b.textContent = S.dirty ? '💾 حفظ التعديلات' : '✔ محفوظ';
+    b.style.background = S.dirty ? '#c0392b' : ''; b.style.color = S.dirty ? '#fff' : '';
+  }
+  document.addEventListener('keydown', function (e) { if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S') && CFG.manual && S.loggedIn) { e.preventDefault(); window.cloudSaveClick(); } });
   async function cloudSave() {
     if (S.saving) { S.dirty = true; return; }
     if (!S.dirty || !S.hasLock) return;
@@ -7205,7 +7315,7 @@ body.cloud-ro .view-section input:not(.ro-ok):not([type=checkbox]),body.cloud-ro
       try { res = await send(wire); }
       catch (e1) { if (e1.message === 'bad_payload' && wire !== payload) { S.noZ = true; res = await send(payload); } else throw e1; }
       if (S.importPending) { S.importPending = false; S.empty = false; S.loaded = true; }
-      S.version = res.version; S.lastJson = json; S.lastSavedAt = stamp(); if (S.offline) endOffline();
+      S.version = res.version; S.lastJson = json; S.lastCmp = cmpJson(); S.lastSavedAt = stamp(); if (S.offline) endOffline();
     } catch (e) { S.dirty = true; saveError(e); }
     finally { S.saving = false; updateBar(); if (S.dirty && S.hasLock && !S.offline && !S.ro) markDirty(); }
   }
@@ -7252,19 +7362,19 @@ body.cloud-ro .view-section input:not(.ro-ok):not([type=checkbox]),body.cloud-ro
   }
   function startTimers() {
     clearInterval(S.t.beat); S.t.beat = setInterval(beat, CFG.beat);
-    clearInterval(S.t.idle); S.t.idle = setInterval(function () { if (S.loggedIn && Date.now() - S.lastAct > CFG.idleMs) cloudLogout('اتقفلت الجلسة بعد 30 دقيقة بدون نشاط.'); }, CFG.idleCheck);
+    clearInterval(S.t.idle); S.t.idle = setInterval(function () { if (S.loggedIn && Date.now() - S.lastAct > CFG.idleMs && !(CFG.manual && S.dirty)) cloudLogout('اتقفلت الجلسة بعد 30 دقيقة بدون نشاط.'); }, CFG.idleCheck);
     ['mousemove', 'keydown', 'click', 'touchstart', 'scroll'].forEach(function (ev) { document.addEventListener(ev, function () { S.lastAct = Date.now(); }, true); });
   }
   async function cloudLogout(msg) {
     S.loggedIn = false; clearInterval(S.t.beat); clearInterval(S.t.idle);
-    try { if (S.dirty && S.hasLock) { S.loggedIn = true; await cloudSave(); S.loggedIn = false; } } catch (e) { }
+    try { if (S.dirty && S.hasLock && !CFG.manual) { S.loggedIn = true; await cloudSave(); S.loggedIn = false; } } catch (e) { }
     try { if (S.hasLock) await rpc('release_lock', { p_session: S.session }); } catch (e) { }
     try { if (msg) sessionStorage.setItem('cloud_msg', msg); } catch (e) { }
     try { localStorage.removeItem('awlad_hamed_clean_v10'); } catch (e) { }
     location.reload();
   }
   function forceLogout(msg) { try { sessionStorage.setItem('cloud_msg', msg); } catch (e) { } location.reload(); }
-  lockSystem = function () { cloudLogout(''); };
+  lockSystem = function () { if (CFG.manual && S.dirty && S.hasLock) askUnsaved(function () { cloudLogout(''); }, null); else cloudLogout(''); };
   window.addEventListener('pagehide', function () {
     if (S.loggedIn && S.hasLock && S.token) { try { fetch(CFG.url + '/rest/v1/rpc/release_lock', { method: 'POST', keepalive: true, headers: hdr(), body: JSON.stringify({ p_session: S.session }) }); } catch (e) { } }
   });
@@ -7385,7 +7495,7 @@ body.cloud-ro .view-section input:not(.ro-ok):not([type=checkbox]),body.cloud-ro
   async function cloudSaveNow() { clearTimeout(S.t.save); if (S.dirty) await cloudSave(); }
 
   // اختبار/تشخيص
-  window._cloud = { rpc: rpc, S: S, beat: beat, save: cloudSave, apply: cloudApply, markAdminButtons: markAdminButtons, ensureTok: ensureTok, hdr: hdr, CFG: CFG };
+  window._cloud = { cmp: cmpJson, saveNow: saveNow, askUnsaved: askUnsaved, rpc: rpc, S: S, beat: beat, save: cloudSave, apply: cloudApply, markAdminButtons: markAdminButtons, ensureTok: ensureTok, hdr: hdr, CFG: CFG };
   setTimeout(markAdminButtons, 300);
 })();
 </script>
@@ -7865,6 +7975,7 @@ body.cloud-ro .view-section input:not(.ro-ok):not([type=checkbox]),body.cloud-ro
     if (cur && p.steps.some(function (s) { return s.to === currentMonthName; })) { INITIAL_MONTH_BALANCE = cur.initBalance; applyOpening(cur.opening); }
     delete LIST_DATA.pendingSync;
     saveStorage();
+    try { if (window._cloud) window._cloud.saveNow(); } catch (e) { }
   }
 
   window.linkSync = function (from, silent) {
@@ -7895,10 +8006,13 @@ body.cloud-ro .view-section input:not(.ro-ok):not([type=checkbox]),body.cloud-ro
   var _switchMonth = switchMonth;
   switchMonth = function (m) {
     var leaving = currentMonthName;
+    var cl = window._cloud;
+    if (m !== leaving && monthsArchive[m] && !window.__skipSync && cl && cl.CFG && cl.CFG.manual && cl.S.dirty && cl.S.hasLock && !cl.S.ro) { cl.askUnsaved(function () { switchMonth(m); }, function () { window.__skipSync = true; try { switchMonth(m); } finally { window.__skipSync = false; } }); return; }
     if (m !== leaving && monthsArchive[m]) {
       try {
         var ms = monthNames();
-        if (ms.indexOf(leaving) < ms.length - 1) {
+        if (window.__skipSync && ms.indexOf(leaving) < ms.length - 1) { LIST_DATA.pendingSync = leaving; }
+        else if (ms.indexOf(leaving) < ms.length - 1) {
           var r = window.linkSync(leaving, true);
           if (r === 'declined') { /* هيفضل التنبيه ظاهر */ }
         }
@@ -7918,6 +8032,7 @@ body.cloud-ro .view-section input:not(.ro-ok):not([type=checkbox]),body.cloud-ro
       var B = monthsArchive[currentMonthName];
       B.derivedBase = { opening: clone(B.opening), initBalance: B.initBalance };
       saveStorage();
+      try { if (window._cloud) window._cloud.saveNow(); } catch (e) { }
     }
   };
 
@@ -7973,6 +8088,8 @@ body.cloud-ro .view-section input:not(.ro-ok):not([type=checkbox]),body.cloud-ro
   setTimeout(upd, 600);
 })();
 
+
+(function () { var _d = window.deleteMonthAdmin; if (typeof _d !== 'function') return; window.deleteMonthAdmin = function () { var n = Object.keys(monthsArchive).length; _d.apply(this, arguments); if (Object.keys(monthsArchive).length !== n) { try { if (window._cloud) window._cloud.saveNow(); } catch (e) { } } }; })();
 </script>
 </body>
 </html>
